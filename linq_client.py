@@ -3,7 +3,7 @@ import httpx
 
 LINQ_API_BASE = "https://api.linqapp.com/api/partner/v3"
 LINQ_API_TOKEN = os.environ.get("LINQ_API_TOKEN")
-LINQ_PHONE_NUMBER = os.environ.get("LINQ_PHONE_NUMBER")  # your Linq line, e.g. +12052960153
+LINQ_PHONE_NUMBER = os.environ.get("LINQ_PHONE_NUMBER")
 
 
 def _require_credentials():

@@ -160,7 +160,6 @@ def _handle_command(body: str, sender: str, message_id: str) -> Optional[str]:
     if not words:
         return "Reply 'approve', 'rollback', or 'status'."
 
-    # `status` — list pending deploys
     if words[0] == "status":
         pending = _pending_ids()
         if not pending:
@@ -171,7 +170,6 @@ def _handle_command(body: str, sender: str, message_id: str) -> Optional[str]:
             lines.append(f"  {did} — {v.get('repo', '?')} ({v.get('branch', '?')})")
         return "\n".join(lines)
 
-    # Detect `force` override
     force = False
     if words[0] == "force":
         force = True
@@ -179,7 +177,6 @@ def _handle_command(body: str, sender: str, message_id: str) -> Optional[str]:
         if not words:
             return "Usage: 'force approve' or 'force approve 10'."
 
-    # Detect canary percent
     percent = 100
     if len(words) >= 2 and words[-1].isdigit():
         p = int(words[-1])
@@ -189,7 +186,6 @@ def _handle_command(body: str, sender: str, message_id: str) -> Optional[str]:
         else:
             return "Canary must be one of: 10, 25, 50, 100."
 
-    # Now: either [command] or [deploy_id, command]
     if len(words) == 2:
         deploy_id, command = words[0], words[1]
     elif len(words) == 1:

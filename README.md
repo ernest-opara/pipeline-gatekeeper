@@ -52,7 +52,7 @@ Claude turns that into a real GitHub review — APPROVE with a line comment on `
 |---|---|
 | `approve` | Full deploy (100%) |
 | `approve 10` / `25` / `50` | Canary at that percent |
-| `rollback` | Cancel the deploy |
+| `rollback` | Cancel the deployment |
 | `status` | List every pending deploy |
 | `force approve` | Override the deploy-window check |
 | Any freeform PR review | Claude parses → GitHub review posted |

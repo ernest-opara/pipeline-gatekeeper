@@ -2,11 +2,19 @@ import os
 import httpx
 
 LINQ_API_BASE = "https://api.linqapp.com/api/partner/v3"
-LINQ_API_TOKEN = os.environ["LINQ_API_TOKEN"]
-LINQ_PHONE_NUMBER = os.environ["LINQ_PHONE_NUMBER"]  # your Linq line, e.g. +12052960153
+LINQ_API_TOKEN = os.environ.get("LINQ_API_TOKEN")
+LINQ_PHONE_NUMBER = os.environ.get("LINQ_PHONE_NUMBER")  # your Linq line, e.g. +12052960153
+
+
+def _require_credentials():
+    if not LINQ_API_TOKEN or not LINQ_PHONE_NUMBER:
+        raise RuntimeError(
+            "LINQ_API_TOKEN and LINQ_PHONE_NUMBER must be set to call the Linq API."
+        )
 
 
 def _headers():
+    _require_credentials()
     return {
         "Authorization": f"Bearer {LINQ_API_TOKEN}",
         "Content-Type": "application/json",

@@ -229,7 +229,8 @@ def _handle_pr_reply(pr: dict, reply_text: str, sender: str, message_id: str) ->
         return _friendly_github_error(e, decision)
 
     entry = store.get(pr["key"]) or {}
-    entry["state"] = "reviewed"
+    if decision != "comment":
+        entry["state"] = "reviewed"
     entry["decision"] = decision
     entry["reviewer"] = sender
     store.set(pr["key"], entry)

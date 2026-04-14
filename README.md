@@ -9,6 +9,7 @@ When your pipeline is ready to ship, Gatekeeper texts you a short brief: what ch
 - **AI pre-flight risk summary** — Claude reads the diff and texts you a one-line risk call (LOW / MEDIUM / HIGH) before you approve.
 - **Rich approval context** — commit message, files changed, PR title, and a link to the GitHub run come in the message.
 - **Canary rollouts** — reply `approve 10` to ship to 10% of traffic, `approve 100` for a full deploy.
+- **iMessage PR reviews** — when a PR opens, Gatekeeper texts you. Reply in natural language ("approve, but auth.py:42 needs a timeout") and Claude converts it into a proper GitHub review with line comments.
 - **Approver allowlist** — only phone numbers on the allowlist can approve.
 - **Business-hours window** — deploys outside the window require a `force approve` override.
 - **`status` command** — text `status` to see every pending deploy.
@@ -61,6 +62,7 @@ pip install -r requirements.txt
 | `DEPLOY_WINDOW_END_HOUR` | optional | End of deploy window (0–23) |
 | `DEPLOY_WINDOW_TZ` | optional | IANA timezone for the window (e.g. `America/New_York`) |
 | `REDIS_URL` | optional | Redis connection string for durable state |
+| `GH_TOKEN` | for PR reviews | Fine-grained PAT with `pull-requests: write` + `contents: read` on the repo |
 
 ### 3. Run the server
 
@@ -115,6 +117,24 @@ Add repo secrets: `LINQ_API_TOKEN`, `LINQ_PHONE_NUMBER`, `NOTIFY_NUMBER`, `GATE_
 
 The server reacts to your reply (👍 on receipt, ✅ on approve, ❌ on rollback) for visual confirmation.
 
+## PR reviews
+
+When a PR is opened (or marked ready for review), [.github/workflows/pr-review.yml](.github/workflows/pr-review.yml) posts to `/pr/register` and you get a text:
+
+> PR ready for review — acme/api#128
+> Title: Reduce idle timeout to 5m
+> By: @dana
+>
+> Reply with your review.
+
+Reply however you want — free-form. Examples:
+
+- *"approve"* → APPROVE with no body
+- *"looks good, but add a comment on auth.py line 42 that we should make the timeout configurable"* → APPROVE with one line comment
+- *"request changes — payment.py:88 drops error context, and we need tests for the new branch"* → REQUEST_CHANGES with a line comment + overall body
+
+Claude parses the reply into `{decision, body, line_comments}` and posts it as a review via the GitHub API. Hallucinated line references are validated against the actual diff and silently dropped.
+
 ## API
 
 | Method | Path | Purpose |
@@ -122,6 +142,7 @@ The server reacts to your reply (👍 on receipt, ✅ on approve, ❌ on rollbac
 | `POST` | `/webhook/linq` | Linq inbound message webhook |
 | `POST` | `/deploy/register` | Register a pending deploy (GitHub Actions) |
 | `GET`  | `/deploy/status/{deploy_id}` | Poll deploy state + canary percent |
+| `POST` | `/pr/register` | Register a PR for iMessage review |
 
 ## Security
 

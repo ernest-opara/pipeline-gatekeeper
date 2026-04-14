@@ -28,7 +28,9 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from ai_summary import summarize_risk
+from github_client import get_pr_diff, submit_review
 from linq_client import (
+    create_chat,
     mark_as_read,
     reply_to_chat,
     send_deploy_alert,
@@ -36,6 +38,7 @@ from linq_client import (
     start_typing,
     stop_typing,
 )
+from pr_review import parse_review
 from state_store import build_store
 
 logging.basicConfig(level=logging.INFO)
@@ -132,6 +135,12 @@ async def linq_webhook(
             body = part.get("value", "").strip().lower()
             break
 
+    raw_body_text = ""
+    for part in parts:
+        if part.get("type") == "text":
+            raw_body_text = part.get("value", "").strip()
+            break
+
     logger.info("Inbound from %s: '%s'", sender, body)
 
     _safe(mark_as_read, chat_id)
@@ -139,8 +148,13 @@ async def linq_webhook(
         _safe(send_reaction, message_id, "like")
     _safe(start_typing, chat_id)
 
+    pr_entry = _find_pr_by_chat(chat_id)
+
     try:
-        reply_text = _handle_command(body, sender, message_id)
+        if pr_entry:
+            reply_text = _handle_pr_reply(pr_entry, raw_body_text, sender, message_id)
+        else:
+            reply_text = _handle_command(body, sender, message_id)
     finally:
         _safe(stop_typing, chat_id)
 
@@ -150,8 +164,66 @@ async def linq_webhook(
     return {"ok": True}
 
 
+def _find_pr_by_chat(chat_id: str) -> Optional[dict]:
+    for key, entry in store.all().items():
+        if entry.get("type") == "pr" and entry.get("chat_id") == chat_id and entry.get("state") == "pending":
+            return {"key": key, **entry}
+    return None
+
+
+def _handle_pr_reply(pr: dict, reply_text: str, sender: str, message_id: str) -> str:
+    if not _approver_allowed(sender):
+        return f"Sender {sender} is not on the approver allowlist."
+
+    owner = pr["owner"]
+    repo = pr["repo"]
+    number = pr["number"]
+
+    try:
+        diff = get_pr_diff(owner, repo, number)
+    except Exception as e:
+        logger.error("Failed to fetch PR diff: %s", e)
+        return "Could not fetch the PR diff from GitHub."
+
+    review = parse_review(reply_text, diff)
+    if not review:
+        return "Could not parse your review. Try again with explicit 'approve', 'request changes', or 'comment'."
+
+    decision = review["decision"]
+    try:
+        submit_review(
+            owner=owner,
+            repo=repo,
+            number=number,
+            decision=decision,
+            body=review.get("body", ""),
+            line_comments=review.get("line_comments", []),
+        )
+    except Exception as e:
+        logger.error("GitHub review submit failed: %s", e)
+        return f"GitHub rejected the review: {e}"
+
+    entry = store.get(pr["key"]) or {}
+    entry["state"] = "reviewed"
+    entry["decision"] = decision
+    entry["reviewer"] = sender
+    store.set(pr["key"], entry)
+
+    if message_id:
+        emoji = {"approve": "✅", "request_changes": "❌", "comment": "💬"}[decision]
+        _safe(send_reaction, message_id, "custom", emoji)
+
+    n_comments = len(review.get("line_comments", []))
+    suffix = f" ({n_comments} line comment{'s' if n_comments != 1 else ''})" if n_comments else ""
+    label = {"approve": "Approved", "request_changes": "Changes requested", "comment": "Commented"}[decision]
+    return f"{label} on {owner}/{repo}#{number}{suffix}."
+
+
 def _pending_ids() -> list[str]:
-    return [k for k, v in store.all().items() if v.get("state") == DeployState.PENDING]
+    return [
+        k for k, v in store.all().items()
+        if v.get("state") == DeployState.PENDING and v.get("type") != "pr"
+    ]
 
 
 def _handle_command(body: str, sender: str, message_id: str) -> Optional[str]:
@@ -305,6 +377,48 @@ async def register_deploy(body: RegisterDeploy):
         "state": DeployState.PENDING,
         "risk_summary": risk,
     }
+
+
+class RegisterPR(BaseModel):
+    owner: str
+    repo: str
+    number: int
+    title: str
+    author: str
+    notify_number: str
+    url: str = ""
+
+
+@app.post("/pr/register")
+async def register_pr(body: RegisterPR):
+    msg = (
+        f"PR ready for review — {body.owner}/{body.repo}#{body.number}\n"
+        f"Title: {body.title}\n"
+        f"By: {body.author}\n"
+    )
+    if body.url:
+        msg += f"\n{body.url}\n"
+    msg += "\nReply with your review (e.g. 'approve', 'request changes — auth.py:42 needs a timeout')."
+
+    chat = create_chat(body.notify_number, msg)
+    chat_id = chat["chat"]["id"]
+
+    key = f"pr-{body.owner}-{body.repo}-{body.number}"
+    store.set(
+        key,
+        {
+            "type": "pr",
+            "state": "pending",
+            "chat_id": chat_id,
+            "owner": body.owner,
+            "repo": body.repo,
+            "number": body.number,
+            "title": body.title,
+            "author": body.author,
+        },
+    )
+    logger.info("Registered PR %s/%s#%d (chat: %s)", body.owner, body.repo, body.number, chat_id)
+    return {"ok": True, "key": key, "chat_id": chat_id}
 
 
 @app.get("/deploy/status/{deploy_id}")

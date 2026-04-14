@@ -1,0 +1,25 @@
+name: Request iMessage PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Register PR with gatekeeper
+        run: |
+          curl -sf -X POST "${{ secrets.GATE_SERVER_URL }}/pr/register" \
+            -H "Content-Type: application/json" \
+            -d @- <<EOF
+          {
+            "owner": "${{ github.repository_owner }}",
+            "repo": "${{ github.event.repository.name }}",
+            "number": ${{ github.event.pull_request.number }},
+            "title": $(jq -Rs . <<< "${{ github.event.pull_request.title }}"),
+            "author": "${{ github.event.pull_request.user.login }}",
+            "notify_number": "${{ secrets.NOTIFY_NUMBER }}",
+            "url": "${{ github.event.pull_request.html_url }}"
+          }
+          EOF

@@ -1,4 +1,5 @@
 from server import app, DeployState, _handle_command, store
+from pr_review import _commentable_lines
 
 
 def test_app_boots():
@@ -51,3 +52,20 @@ def test_rollback():
     _reset_store("d1")
     _handle_command("rollback", "+15551234567", "m1")
     assert store.get("d1")["state"] == DeployState.ROLLED_BACK
+
+
+def test_commentable_lines_parses_additions():
+    diff = """diff --git a/auth.py b/auth.py
+--- a/auth.py
++++ b/auth.py
+@@ -10,3 +10,4 @@
+ def login():
+-    pass
++    timeout = 30
++    return timeout
+ # end
+"""
+    allowed = _commentable_lines(diff)
+    right = allowed.get(("auth.py", "RIGHT"), set())
+    assert 11 in right
+    assert 12 in right

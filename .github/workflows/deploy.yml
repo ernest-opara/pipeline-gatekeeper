@@ -7,7 +7,7 @@ on:
 env:
   GATE_SERVER: ${{ secrets.GATE_SERVER_URL }}
   NOTIFY_NUMBER: ${{ secrets.NOTIFY_NUMBER }}
-  TIMEOUT_MINUTES: 10
+  TIMEOUT_MINUTES: 3
 
 jobs:
   build-and-test:

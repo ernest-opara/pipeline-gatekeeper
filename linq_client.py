@@ -102,14 +102,44 @@ def send_reaction(message_id: str, reaction: str, custom_emoji: str | None = Non
     resp.raise_for_status()
 
 
-def send_deploy_alert(to: str, deploy_id: str, repo: str, branch: str, actor: str) -> str:
+def send_deploy_alert(
+    to: str,
+    deploy_id: str,
+    repo: str,
+    branch: str,
+    actor: str,
+    commit_sha: str = "",
+    commit_message: str = "",
+    pr_title: str = "",
+    files_changed_count: int = 0,
+    run_url: str = "",
+    risk_summary: str = "",
+    outside_window: bool = False,
+) -> str:
     """Send the deploy gate notification and return the chat_id for future replies."""
-    body = (
-        f"Deploy ready\n"
-        f"Repo: {repo} ({branch})\n"
-        f"By: {actor}\n"
-        f"ID: {deploy_id}\n\n"
-        f"Reply 'approve' to deploy or 'rollback' to cancel."
-    )
+    lines = [f"Deploy ready — {repo} ({branch})"]
+    if pr_title:
+        lines.append(f"PR: {pr_title}")
+    if commit_message:
+        first_line = commit_message.splitlines()[0][:120]
+        lines.append(f"Commit: {first_line}")
+    if commit_sha:
+        lines.append(f"SHA: {commit_sha[:7]}")
+    if files_changed_count:
+        lines.append(f"Files changed: {files_changed_count}")
+    lines.append(f"By: {actor}")
+    lines.append(f"ID: {deploy_id}")
+    if risk_summary:
+        lines.append("")
+        lines.append(risk_summary)
+    if outside_window:
+        lines.append("")
+        lines.append("⚠︎ Outside deploy window — reply 'force approve' to override.")
+    if run_url:
+        lines.append("")
+        lines.append(f"Run: {run_url}")
+    lines.append("")
+    lines.append("Reply 'approve', 'approve 10' (canary 10%), or 'rollback'.")
+    body = "\n".join(lines)
     result = create_chat(to, body)
     return result["chat"]["id"]

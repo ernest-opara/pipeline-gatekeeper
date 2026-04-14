@@ -1,14 +1,18 @@
 # Pipeline Gatekeeper
 
-**Approve production deploys from your phone via iMessage.**
+**Approve production deploys from your phone — with an AI risk briefing.**
 
-Pipeline Gatekeeper is a lightweight approval gate for GitHub Actions. When your pipeline is ready to ship, it texts you. You reply `approve` or `rollback`. The deploy proceeds — or doesn't.
+When your pipeline is ready to ship, Gatekeeper texts you a short brief: what changed, who changed it, and a Claude-generated risk assessment. You reply `approve`, `approve 10` (canary), or `rollback`. The deploy proceeds accordingly.
 
-No dashboards. No Slack bots. Just a text message and a one-word reply.
+## Features
 
-## Why
-
-Production deploys deserve a human in the loop, but breaking out the laptop to click a button in a CI dashboard is friction you'll eventually skip. An iMessage you can answer from anywhere is friction you won't.
+- **AI pre-flight risk summary** — Claude reads the diff and texts you a one-line risk call (LOW / MEDIUM / HIGH) before you approve.
+- **Rich approval context** — commit message, files changed, PR title, and a link to the GitHub run come in the message.
+- **Canary rollouts** — reply `approve 10` to ship to 10% of traffic, `approve 100` for a full deploy.
+- **Approver allowlist** — only phone numbers on the allowlist can approve.
+- **Business-hours window** — deploys outside the window require a `force approve` override.
+- **`status` command** — text `status` to see every pending deploy.
+- **Redis-ready state** — set `REDIS_URL` for persistence across restarts; otherwise state is in-memory.
 
 ## How it works
 
@@ -19,34 +23,23 @@ Production deploys deserve a human in the loop, but breaking out the laptop to c
   GitHub Actions runs tests
        │
        ▼
-  Gatekeeper texts you  ──────►  📱  "Deploy abc123 ready. approve / rollback?"
-       │                                       │
-       │                                       ▼
-       │                            you reply "approve"
-       │                                       │
-       ▼                                       ▼
-  Actions polls /deploy/status  ◄────  webhook updates state
+  /deploy/register ──▶ Claude summarizes risk ──▶ iMessage:
+                                                  "MEDIUM RISK: touches auth middleware.
+                                                   approve / approve 10 / rollback?"
+       │                                                │
+       │                                                ▼
+       │                                      you reply from your phone
+       │                                                │
+       ▼                                                ▼
+  poll /deploy/status  ◄────────────── webhook updates state
        │
        ▼
-  Deploy runs (or is cancelled)
+  deploy runs at the approved canary %
 ```
 
-Under the hood:
+## Setup
 
-1. A FastAPI server receives inbound iMessage webhooks from [Linq](https://linq.com) and exposes a status endpoint.
-2. A GitHub Actions step registers each deploy, then polls for your decision.
-3. You reply from your phone. The server updates state. Actions sees it on the next poll.
-
-## Requirements
-
-- Python 3.10+
-- A [Linq](https://linq.com) account (for iMessage delivery) with an API token and sandbox line
-- A publicly reachable URL for the webhook server (ngrok for local dev, or a host like Fly.io / Railway for production)
-- A GitHub repo where you want the gate installed
-
-## Installation
-
-### 1. Install and run the server
+### 1. Install
 
 ```bash
 git clone <this repo>
@@ -54,90 +47,67 @@ cd pipeline-gatekeeper
 pip install -r requirements.txt
 ```
 
-Set the required environment variables:
+### 2. Environment variables
 
-| Variable | Description |
-|---|---|
-| `LINQ_API_TOKEN` | Your Linq API token |
-| `LINQ_PHONE_NUMBER` | Your Linq sandbox line (e.g. `+14158707772`) |
-| `NOTIFY_NUMBER` | The phone number that should receive approval requests |
-| `LINQ_WEBHOOK_SECRET` | (Optional but recommended) HMAC secret for verifying inbound webhooks |
+| Variable | Required | Purpose |
+|---|---|---|
+| `LINQ_API_TOKEN` | yes | Linq API token |
+| `LINQ_PHONE_NUMBER` | yes | Your Linq sandbox line |
+| `NOTIFY_NUMBER` | yes | Phone number to alert |
+| `ANTHROPIC_API_KEY` | recommended | Enables AI risk summary |
+| `LINQ_WEBHOOK_SECRET` | recommended | HMAC secret for webhook signature verification |
+| `APPROVER_NUMBERS` | optional | Comma-separated allowlist of approver phone numbers |
+| `DEPLOY_WINDOW_START_HOUR` | optional | Start of deploy window (0–23) |
+| `DEPLOY_WINDOW_END_HOUR` | optional | End of deploy window (0–23) |
+| `DEPLOY_WINDOW_TZ` | optional | IANA timezone for the window (e.g. `America/New_York`) |
+| `REDIS_URL` | optional | Redis connection string for durable state |
 
-Start the server:
+### 3. Run the server
 
 ```bash
 uvicorn server:app --port 8000
 ```
 
-Interactive API docs are available at `http://127.0.0.1:8000/docs`.
+Swagger docs at `http://127.0.0.1:8000/docs`.
 
-### 2. Expose the server publicly
+### 4. Expose publicly
 
-For local development:
+For local dev: `ngrok http 8000`. For production: deploy to any Python host (Fly.io, Railway, Render) and set `REDIS_URL` so state survives restarts.
 
-```bash
-ngrok http 8000
-```
+### 5. Point Linq at the server
 
-For production, deploy `server.py` to any Python host. Note that the default in-memory state store (`deploy_states`) does not survive restarts — swap it for Redis or a database before going live.
+Set the inbound webhook URL in Linq to `https://<host>/webhook/linq`.
 
-### 3. Configure Linq
+### 6. Configure GitHub Actions
 
-In the Linq dashboard, set the inbound webhook URL to:
+Add repo secrets: `LINQ_API_TOKEN`, `LINQ_PHONE_NUMBER`, `NOTIFY_NUMBER`, `GATE_SERVER_URL`. An example workflow ships in `.github/workflows/deploy.yml`.
 
-```
-https://<your-public-host>/webhook/linq
-```
+## Reply reference
 
-### 4. Configure GitHub Actions
-
-Add the following repository secrets:
-
-| Secret | Value |
+| Reply | Effect |
 |---|---|
-| `LINQ_API_TOKEN` | Same token as above |
-| `LINQ_PHONE_NUMBER` | Same number as above |
-| `NOTIFY_NUMBER` | Who to text |
-| `GATE_SERVER_URL` | Your public server URL (no trailing slash) |
+| `approve` | Full deploy (100%) |
+| `approve 10` | Canary to 10% (also `25`, `50`, `100`) |
+| `rollback` | Cancel the deploy |
+| `status` | List every pending deploy |
+| `force approve` | Override the deploy-window check |
+| `<deploy-id> approve` | Disambiguate when multiple deploys are pending |
 
-A workflow example is included in `.github/workflows/`.
-
-## Usage
-
-When a deploy is pending, you'll receive an iMessage like:
-
-> Deploy `deploy-1234567890-42` is ready.
-> Repo: `acme/api` · Branch: `main` · Actor: `@ernest`
-> Reply `approve` or `rollback`.
-
-Reply with one of:
-
-- **`approve`** — the deploy proceeds
-- **`rollback`** — the workflow is cancelled
-
-If more than one deploy is pending at once, prefix your reply with the deploy ID:
-
-```
-deploy-1234567890-42 approve
-```
-
-The server reacts to your message (👍 on receipt, ✅ on approve, ❌ on rollback) so you get visual confirmation without waiting for the reply text.
+The server reacts to your reply (👍 on receipt, ✅ on approve, ❌ on rollback) for visual confirmation.
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/webhook/linq` | Inbound iMessage webhook (called by Linq) |
-| `POST` | `/deploy/register` | Register a new pending deploy (called by GitHub Actions) |
-| `GET`  | `/deploy/status/{deploy_id}` | Poll the current state of a deploy |
-
-Full schemas are available at `/docs`.
+| `POST` | `/webhook/linq` | Linq inbound message webhook |
+| `POST` | `/deploy/register` | Register a pending deploy (GitHub Actions) |
+| `GET`  | `/deploy/status/{deploy_id}` | Poll deploy state + canary percent |
 
 ## Security
 
-- Webhook requests are verified with HMAC-SHA256 when `LINQ_WEBHOOK_SECRET` is set. Always set it in production.
+- Webhook signatures verified with HMAC-SHA256 when `LINQ_WEBHOOK_SECRET` is set.
 - Replayed webhooks older than 5 minutes are rejected.
-- Only inbound messages are acted on; the server ignores its own outbound traffic.
+- Approver allowlist defends against anyone texting the Linq number.
 
 ## License
 

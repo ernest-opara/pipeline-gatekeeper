@@ -1,35 +1,42 @@
 """
 Pipeline Gatekeeper — Webhook Server
 
-Receives inbound Linq messages (v2026-02-03 webhook format),
-parses approve/rollback commands, and exposes a /deploy/status/{deploy_id}
-endpoint that GitHub Actions polls every 10s.
+Receives inbound Linq messages, parses approve/rollback/canary commands, and
+exposes /deploy/register and /deploy/status endpoints for GitHub Actions.
 
-On each inbound message:
-  1. Mark chat as read (clears unread badge)
-  2. React to the message to acknowledge receipt
-  3. Show typing indicator while processing
-  4. Send the reply
-  5. Stop typing indicator
+Features:
+  - Approver phone-number allowlist
+  - AI pre-flight risk summary (Anthropic Claude)
+  - Business-hours deploy window with `force approve` override
+  - Canary stages: `approve 10`, `approve 50`, `approve 100`
+  - `status` command to list pending deploys
+  - Redis-backed state (falls back to in-memory)
 """
 
-import os
-import hmac
 import hashlib
-import logging
-import time
+import hmac
 import json
+import logging
+import os
+import time
+from datetime import datetime
 from enum import Enum
-from fastapi import FastAPI, Request, HTTPException, Header
+from typing import Optional
+from zoneinfo import ZoneInfo
+
+from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
+
+from ai_summary import summarize_risk
 from linq_client import (
+    mark_as_read,
     reply_to_chat,
     send_deploy_alert,
-    mark_as_read,
+    send_reaction,
     start_typing,
     stop_typing,
-    send_reaction,
 )
+from state_store import build_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,10 +45,15 @@ app = FastAPI(title="Pipeline Gatekeeper")
 
 LINQ_WEBHOOK_SECRET = os.environ.get("LINQ_WEBHOOK_SECRET", "")
 
-# In-memory state store.
-# Key: deploy_id  Value: {"state": DeployState, "chat_id": str, ...}
-# Swap for Redis if you need persistence across restarts.
-deploy_states: dict[str, dict] = {}
+APPROVER_NUMBERS = [
+    n.strip() for n in os.environ.get("APPROVER_NUMBERS", "").split(",") if n.strip()
+]
+
+DEPLOY_WINDOW_START = int(os.environ.get("DEPLOY_WINDOW_START_HOUR", "-1"))
+DEPLOY_WINDOW_END = int(os.environ.get("DEPLOY_WINDOW_END_HOUR", "-1"))
+DEPLOY_WINDOW_TZ = os.environ.get("DEPLOY_WINDOW_TZ", "UTC")
+
+store = build_store()
 
 
 class DeployState(str, Enum):
@@ -50,18 +62,30 @@ class DeployState(str, Enum):
     ROLLED_BACK = "rolled_back"
 
 
-# ---------------------------------------------------------------------------
-# Webhook signature verification
-# ---------------------------------------------------------------------------
+def _in_deploy_window() -> bool:
+    """True if deploys are currently allowed without a force override."""
+    if DEPLOY_WINDOW_START < 0 or DEPLOY_WINDOW_END < 0:
+        return True
+    try:
+        now = datetime.now(ZoneInfo(DEPLOY_WINDOW_TZ))
+    except Exception:
+        now = datetime.now()
+    hour = now.hour
+    if DEPLOY_WINDOW_START <= DEPLOY_WINDOW_END:
+        return DEPLOY_WINDOW_START <= hour < DEPLOY_WINDOW_END
+    return hour >= DEPLOY_WINDOW_START or hour < DEPLOY_WINDOW_END
+
+
+def _approver_allowed(sender: str) -> bool:
+    if not APPROVER_NUMBERS:
+        return True
+    return sender in APPROVER_NUMBERS
+
 
 def _verify_signature(raw_body: bytes, timestamp: str, signature: str) -> bool:
-    """Verify Linq HMAC-SHA256 webhook signature.
-    Signed over: "{timestamp}.{raw_body}"
-    """
     if not LINQ_WEBHOOK_SECRET:
         logger.warning("LINQ_WEBHOOK_SECRET not set — skipping signature check")
         return True
-
     message = f"{timestamp}.{raw_body.decode('utf-8')}"
     expected = hmac.new(
         LINQ_WEBHOOK_SECRET.encode("utf-8"),
@@ -71,10 +95,6 @@ def _verify_signature(raw_body: bytes, timestamp: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-# ---------------------------------------------------------------------------
-# Linq webhook endpoint
-# ---------------------------------------------------------------------------
-
 @app.post("/webhook/linq")
 async def linq_webhook(
     request: Request,
@@ -82,46 +102,23 @@ async def linq_webhook(
     x_webhook_signature: str = Header(default=""),
     x_webhook_event: str = Header(default=""),
 ):
-    """
-    Receives v2026-02-03 Linq webhook events.
-
-    For message.received, the data shape is:
-    {
-      "event_type": "message.received",
-      "data": {
-        "chat": { "id": "<uuid>", "is_group": false, "owner_handle": {...} },
-        "id": "<message-uuid>",
-        "direction": "inbound",
-        "sender_handle": { "handle": "+1...", "is_me": false, ... },
-        "parts": [ { "type": "text", "value": "approve" } ],
-        "sent_at": "...",
-        "service": "iMessage"
-      }
-    }
-    """
     raw_body = await request.body()
 
-    # Reject replayed webhooks older than 5 minutes
     if x_webhook_timestamp:
         age = time.time() - float(x_webhook_timestamp)
         if age > 300:
             raise HTTPException(status_code=400, detail="Webhook timestamp too old")
 
-    # Verify HMAC signature
     if x_webhook_signature and not _verify_signature(raw_body, x_webhook_timestamp, x_webhook_signature):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     payload = json.loads(raw_body)
-
     event_type = payload.get("event_type") or x_webhook_event
-    logger.info("Webhook event: %s", event_type)
 
     if event_type != "message.received":
         return {"ok": True, "ignored": True}
 
     data = payload.get("data", {})
-
-    # v2026-02-03: direction field instead of is_from_me
     if data.get("direction") != "inbound":
         return {"ok": True, "ignored": True}
 
@@ -135,96 +132,121 @@ async def linq_webhook(
             body = part.get("value", "").strip().lower()
             break
 
-    logger.info("Inbound from %s in chat %s: '%s'", sender, chat_id, body)
+    logger.info("Inbound from %s: '%s'", sender, body)
 
-    # 1. Mark as read immediately — clears the unread badge
     _safe(mark_as_read, chat_id)
-
-    # 2. React to the message to acknowledge we received it
-    #    (thumbs up while we figure out what they said)
     if message_id:
         _safe(send_reaction, message_id, "like")
-
-    # 3. Show typing indicator while we process
     _safe(start_typing, chat_id)
 
     try:
-        reply_text = _handle_command(body, chat_id, sender, message_id)
+        reply_text = _handle_command(body, sender, message_id)
     finally:
-        # 4. Always stop typing, even if something crashes
         _safe(stop_typing, chat_id)
 
-    # 5. Send the reply in-thread
     if reply_text:
-        await _reply(chat_id, reply_text)
+        _safe(reply_to_chat, chat_id, reply_text)
 
     return {"ok": True}
 
 
-def _handle_command(body: str, chat_id: str, sender: str, message_id: str) -> str | None:
-    """Parse the command and update deploy state. Returns the reply text."""
-    words = body.split()
+def _pending_ids() -> list[str]:
+    return [k for k, v in store.all().items() if v.get("state") == DeployState.PENDING]
 
+
+def _handle_command(body: str, sender: str, message_id: str) -> Optional[str]:
+    """Parse the command. Returns the reply text."""
+    words = body.split()
+    if not words:
+        return "Reply 'approve', 'rollback', or 'status'."
+
+    # `status` — list pending deploys
+    if words[0] == "status":
+        pending = _pending_ids()
+        if not pending:
+            return "No pending deploys."
+        lines = ["Pending deploys:"]
+        for did in pending:
+            v = store.get(did) or {}
+            lines.append(f"  {did} — {v.get('repo', '?')} ({v.get('branch', '?')})")
+        return "\n".join(lines)
+
+    # Detect `force` override
+    force = False
+    if words[0] == "force":
+        force = True
+        words = words[1:]
+        if not words:
+            return "Usage: 'force approve' or 'force approve 10'."
+
+    # Detect canary percent
+    percent = 100
+    if len(words) >= 2 and words[-1].isdigit():
+        p = int(words[-1])
+        if p in (10, 25, 50, 100):
+            percent = p
+            words = words[:-1]
+        else:
+            return "Canary must be one of: 10, 25, 50, 100."
+
+    # Now: either [command] or [deploy_id, command]
     if len(words) == 2:
         deploy_id, command = words[0], words[1]
     elif len(words) == 1:
         command = words[0]
-        pending = [k for k, v in deploy_states.items() if v["state"] == DeployState.PENDING]
+        pending = _pending_ids()
         if len(pending) == 1:
             deploy_id = pending[0]
-        elif len(pending) == 0:
-            return "No pending deploys right now."
+        elif not pending:
+            return "No pending deploys."
         else:
-            ids = ", ".join(pending)
-            return f"Multiple pending deploys: {ids}\nReply '<id> approve' or '<id> rollback'."
+            return f"Multiple pending: {', '.join(pending)}\nReply '<id> approve'."
     else:
-        return "Reply 'approve' or 'rollback' (optionally prefix with the deploy ID)."
+        return "Reply 'approve', 'rollback', or 'status'."
 
-    if deploy_id not in deploy_states:
+    entry = store.get(deploy_id)
+    if not entry:
         return f"Unknown deploy ID: {deploy_id}"
+    if entry["state"] != DeployState.PENDING:
+        return f"Deploy {deploy_id} is already {entry['state']}."
 
-    current = deploy_states[deploy_id]["state"]
-    if current != DeployState.PENDING:
-        return f"Deploy {deploy_id} is already {current}."
+    if not _approver_allowed(sender):
+        return f"Sender {sender} is not on the approver allowlist."
 
     if command == "approve":
-        deploy_states[deploy_id]["state"] = DeployState.APPROVED
-        # Upgrade the earlier thumbs-up to a checkmark on approve
+        if not _in_deploy_window() and not force:
+            return (
+                "Outside the deploy window. Reply 'force approve' to override."
+            )
+        entry["state"] = DeployState.APPROVED
+        entry["canary_percent"] = percent
+        entry["approver"] = sender
+        entry["forced"] = force
+        store.set(deploy_id, entry)
         if message_id:
             _safe(send_reaction, message_id, "custom", "✅")
-        logger.info("Deploy %s APPROVED by %s", deploy_id, sender)
-        return f"Approved. Deploying {deploy_id}..."
+        logger.info("Deploy %s APPROVED by %s at %d%%", deploy_id, sender, percent)
+        scope = "full" if percent == 100 else f"canary {percent}%"
+        return f"Approved ({scope}). Deploying {deploy_id}..."
 
-    elif command == "rollback":
-        deploy_states[deploy_id]["state"] = DeployState.ROLLED_BACK
-        # Red X reaction on rollback
+    if command == "rollback":
+        entry["state"] = DeployState.ROLLED_BACK
+        entry["approver"] = sender
+        store.set(deploy_id, entry)
         if message_id:
             _safe(send_reaction, message_id, "custom", "❌")
         logger.info("Deploy %s ROLLED BACK by %s", deploy_id, sender)
         return f"Cancelled. Deploy {deploy_id} rolled back."
 
-    else:
-        return "Unknown command. Reply 'approve' or 'rollback'."
+    return "Unknown command. Reply 'approve', 'rollback', or 'status'."
 
 
 def _safe(fn, *args, **kwargs):
-    """Call a Linq API function and log errors instead of crashing."""
     try:
         fn(*args, **kwargs)
     except Exception as e:
         logger.error("Non-fatal error calling %s: %s", fn.__name__, e)
 
-
-async def _reply(chat_id: str, body: str):
-    try:
-        reply_to_chat(chat_id, body)
-    except Exception as e:
-        logger.error("Failed to reply to chat %s: %s", chat_id, e)
-
-
-# ---------------------------------------------------------------------------
-# State management endpoints (called by GitHub Actions)
-# ---------------------------------------------------------------------------
 
 class RegisterDeploy(BaseModel):
     deploy_id: str
@@ -232,36 +254,72 @@ class RegisterDeploy(BaseModel):
     branch: str
     actor: str
     notify_number: str
+    commit_sha: str = ""
+    commit_message: str = ""
+    pr_title: str = ""
+    files_changed: list[str] = []
+    diff_stat: str = ""
+    run_url: str = ""
 
 
 @app.post("/deploy/register")
 async def register_deploy(body: RegisterDeploy):
-    """Called by GitHub Actions at the start of the gate step."""
+    risk = ""
+    if body.commit_sha:
+        risk = summarize_risk(
+            sha=body.commit_sha,
+            commit_message=body.commit_message,
+            files_changed=body.files_changed,
+            diff_stat=body.diff_stat,
+        )
+
+    outside_window = not _in_deploy_window()
+
     chat_id = send_deploy_alert(
         to=body.notify_number,
         deploy_id=body.deploy_id,
         repo=body.repo,
         branch=body.branch,
         actor=body.actor,
+        commit_sha=body.commit_sha,
+        commit_message=body.commit_message,
+        pr_title=body.pr_title,
+        files_changed_count=len(body.files_changed),
+        run_url=body.run_url,
+        risk_summary=risk,
+        outside_window=outside_window,
     )
 
-    deploy_states[body.deploy_id] = {
-        "state": DeployState.PENDING,
-        "chat_id": chat_id,
-        "repo": body.repo,
-        "branch": body.branch,
-        "actor": body.actor,
-    }
+    store.set(
+        body.deploy_id,
+        {
+            "state": DeployState.PENDING,
+            "chat_id": chat_id,
+            "repo": body.repo,
+            "branch": body.branch,
+            "actor": body.actor,
+            "commit_sha": body.commit_sha,
+            "risk_summary": risk,
+        },
+    )
     logger.info("Registered deploy %s (chat: %s)", body.deploy_id, chat_id)
-    return {"ok": True, "deploy_id": body.deploy_id, "state": DeployState.PENDING}
+    return {
+        "ok": True,
+        "deploy_id": body.deploy_id,
+        "state": DeployState.PENDING,
+        "risk_summary": risk,
+    }
 
 
 @app.get("/deploy/status/{deploy_id}")
 async def get_status(deploy_id: str):
-    """Polled by GitHub Actions every 10s."""
-    if deploy_id not in deploy_states:
+    entry = store.get(deploy_id)
+    if not entry:
         raise HTTPException(status_code=404, detail="Unknown deploy ID")
     return {
         "deploy_id": deploy_id,
-        "state": deploy_states[deploy_id]["state"],
+        "state": entry["state"],
+        "canary_percent": entry.get("canary_percent", 100),
+        "approver": entry.get("approver", ""),
+        "forced": entry.get("forced", False),
     }

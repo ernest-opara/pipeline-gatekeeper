@@ -191,7 +191,7 @@ def _friendly_github_error(err: Exception, decision: str) -> str:
 
 def _find_pr_by_chat(chat_id: str) -> Optional[dict]:
     for key, entry in store.all().items():
-        if entry.get("type") == "pr" and entry.get("chat_id") == chat_id and entry.get("state") in ("pending", "reviewed"):
+        if entry.get("type") == "pr" and entry.get("chat_id") == chat_id and entry.get("state") == "pending":
             return {"key": key, **entry}
     return None
 

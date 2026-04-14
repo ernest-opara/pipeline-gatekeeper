@@ -64,11 +64,31 @@ pip install -r requirements.txt
 
 ### 3. Run the server
 
+Put your secrets in a `.env.local` file (gitignored) so you don't retype them:
+
 ```bash
-uvicorn server:app --port 8000
+# .env.local
+export LINQ_API_TOKEN=...
+export LINQ_PHONE_NUMBER=+14158707772
+export NOTIFY_NUMBER=+1...
+export ANTHROPIC_API_KEY=sk-ant-...
+export APPROVER_NUMBERS=+1...
 ```
 
-Swagger docs at `http://127.0.0.1:8000/docs`.
+Then load and start:
+
+```bash
+source .env.local
+uvicorn server:app --reload --port 8000
+```
+
+Env vars must be exported **in the same terminal** where `uvicorn` runs — the server reads them at process start. If you add a new variable, restart uvicorn. Swagger docs at `http://127.0.0.1:8000/docs`.
+
+**Missing risk summary?** Check the uvicorn logs. You'll see one of:
+
+- `anthropic SDK not installed — skipping risk summary` → run `python -m pip install anthropic`
+- `Risk summary failed: <reason>` → usually missing Anthropic credits or a bad key
+- No log line at all → `ANTHROPIC_API_KEY` wasn't set in this process
 
 ### 4. Expose publicly
 

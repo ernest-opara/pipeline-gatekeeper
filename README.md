@@ -128,7 +128,7 @@ source .env.local
 uvicorn server:app --reload --port 8000
 ```
 
-Env vars must be exported **in the same terminal** where `uvicorn` runs — the server reads them at process start. If you add a new variable, restart uvicorn. Swagger docs at `http://127.0.0.1:8000/docs`.
+Environment variables must be exported **in the same terminal** where `uvicorn` runs — the server reads them at process start. If you add a new variable, restart uvicorn. Swagger docs at `http://127.0.0.1:8000/docs`.
 
 **Missing risk summary?** Check the uvicorn logs. You'll see one of:
 
@@ -178,6 +178,15 @@ Reply however you want — free-form. Examples:
 - *"request changes — payment.py:88 drops error context, and we need tests for the new branch"* → REQUEST_CHANGES with a line comment + overall body
 
 Claude parses the reply into `{decision, body, line_comments}` and posts it as a review via the GitHub API. Hallucinated line references are validated against the actual diff and silently dropped.
+
+**You can't approve your own PR.** GitHub rejects self-approvals with a 422. If the account behind `GH_TOKEN` also opened the PR, reply `comment ...` instead, or use a PAT under a different account (a bot or teammate). The server catches this and texts back a clear message; common failures and the reply you'll get:
+
+| Situation | Reply you'll receive |
+|---|---|
+| Approving your own PR | *"GitHub won't let you approve your own PR. Reply 'comment ...' instead, or use a PAT under a different account."* |
+| Token missing `pull-requests: write` | *"GitHub denied the request — the token is missing 'pull-requests: write'."* |
+| Token can't see this repo | *"GitHub couldn't find the PR. Check the token has access to this repo."* |
+| Token invalid/expired | *"GitHub token is invalid or expired."* |
 
 ## API
 

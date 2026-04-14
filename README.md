@@ -128,7 +128,7 @@ source .env.local
 uvicorn server:app --reload --port 8000
 ```
 
-Env vars must be exported **in the same terminal** where `uvicorn` runs — the server reads them at process start. If you add a new variable, restart uvicorn. Swagger docs at `http://127.0.0.1:8000/docs`.
+Environment variables must be exported **in the same terminal** where `uvicorn` runs — the server reads them at process start. If you add a new variable, restart uvicorn. Swagger docs at `http://127.0.0.1:8000/docs`.
 
 **Missing risk summary?** Check the uvicorn logs. You'll see one of:
 

@@ -25,11 +25,14 @@ def test_find_pr_by_chat_ignores_deploys():
     assert server._find_pr_by_chat("c1") is None
 
 
-def test_find_pr_by_chat_ignores_reviewed_pr():
+def test_find_pr_by_chat_finds_reviewed_pr():
     server.store.set("pr-a-b-1", {
         "type": "pr", "state": "reviewed", "chat_id": "c1",
+        "owner": "a", "repo": "b", "number": 1,
     })
-    assert server._find_pr_by_chat("c1") is None
+    found = server._find_pr_by_chat("c1")
+    assert found is not None
+    assert found["number"] == 1
 
 
 def test_pending_ids_excludes_prs():

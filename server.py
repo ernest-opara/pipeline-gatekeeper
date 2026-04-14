@@ -164,6 +164,31 @@ async def linq_webhook(
     return {"ok": True}
 
 
+def _friendly_github_error(err: Exception, decision: str) -> str:
+    import httpx
+    if isinstance(err, httpx.HTTPStatusError):
+        status = err.response.status_code
+        try:
+            msg = (err.response.json().get("message") or "").lower()
+        except Exception:
+            msg = ""
+        if status == 422 and "own pull request" in msg:
+            if decision == "approve":
+                return (
+                    "GitHub won't let you approve your own PR. "
+                    "Reply 'comment ...' instead, or use a PAT under a different account."
+                )
+            return "GitHub rejected the review on your own PR. Try 'comment' instead."
+        if status == 403:
+            return "GitHub denied the request — the token is missing 'pull-requests: write'."
+        if status == 404:
+            return "GitHub couldn't find the PR. Check the token has access to this repo."
+        if status == 401:
+            return "GitHub token is invalid or expired."
+        return f"GitHub error {status}. Check server logs."
+    return "Could not submit the review. Check server logs."
+
+
 def _find_pr_by_chat(chat_id: str) -> Optional[dict]:
     for key, entry in store.all().items():
         if entry.get("type") == "pr" and entry.get("chat_id") == chat_id and entry.get("state") == "pending":
@@ -201,7 +226,7 @@ def _handle_pr_reply(pr: dict, reply_text: str, sender: str, message_id: str) ->
         )
     except Exception as e:
         logger.error("GitHub review submit failed: %s", e)
-        return f"GitHub rejected the review: {e}"
+        return _friendly_github_error(e, decision)
 
     entry = store.get(pr["key"]) or {}
     entry["state"] = "reviewed"

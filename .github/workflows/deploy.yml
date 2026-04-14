@@ -1,0 +1,108 @@
+name: Deploy with iMessage Gate
+
+on:
+  push:
+    branches: [main]
+
+env:
+  GATE_SERVER: ${{ secrets.GATE_SERVER_URL }}   # e.g. https://your-server.ngrok.io
+  NOTIFY_NUMBER: ${{ secrets.NOTIFY_NUMBER }}   # your phone number, e.g. +14155551234
+  TIMEOUT_MINUTES: 10
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest
+
+  deploy-gate:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    outputs:
+      decision: ${{ steps.poll.outputs.decision }}
+    steps:
+      - name: Generate deploy ID
+        id: deploy-id
+        run: echo "id=deploy-$(date +%s)-${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      - name: Register deploy + send iMessage
+        run: |
+          curl -s -X POST "$GATE_SERVER/deploy/register" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "deploy_id": "${{ steps.deploy-id.outputs.id }}",
+              "repo": "${{ github.repository }}",
+              "branch": "${{ github.ref_name }}",
+              "actor": "${{ github.actor }}",
+              "notify_number": "${{ env.NOTIFY_NUMBER }}"
+            }'
+
+      - name: Poll for decision
+        id: poll
+        run: |
+          DEPLOY_ID="${{ steps.deploy-id.outputs.id }}"
+          DEADLINE=$(( $(date +%s) + ${{ env.TIMEOUT_MINUTES }} * 60 ))
+
+          echo "Waiting for iMessage reply (deploy: $DEPLOY_ID)..."
+
+          while true; do
+            NOW=$(date +%s)
+            if [ $NOW -ge $DEADLINE ]; then
+              echo "Timed out waiting for approval."
+              echo "decision=timeout" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            STATE=$(curl -s "$GATE_SERVER/deploy/status/$DEPLOY_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'])")
+            echo "Current state: $STATE"
+
+            if [ "$STATE" = "approved" ]; then
+              echo "decision=approved" >> $GITHUB_OUTPUT
+              exit 0
+            elif [ "$STATE" = "rolled_back" ]; then
+              echo "decision=rolled_back" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+  deploy:
+    needs: deploy-gate
+    if: needs.deploy-gate.outputs.decision == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying ${{ github.sha }} to production..."
+          # Replace with your actual deploy command:
+          # kubectl set image deployment/app app=myimage:${{ github.sha }}
+          # or: helm upgrade --install ...
+          # or: ./deploy.sh
+
+      - name: Notify success
+        run: |
+          curl -s -X POST "https://api.linqapp.com/api/partner/v3/chats" \
+            -H "Authorization: Bearer ${{ secrets.LINQ_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d '{
+              "from": "${{ secrets.LINQ_PHONE_NUMBER }}",
+              "to": ["${{ env.NOTIFY_NUMBER }}"],
+              "message": {
+                "parts": [{"type": "text", "value": "Deployed: ${{ github.repository }} @ ${{ github.sha }}"}]
+              }
+            }'

@@ -29,7 +29,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from ai_summary import summarize_risk
-from github_client import get_pr_diff, submit_review
+from github_client import enable_auto_merge, get_pr_diff, merge_pr, submit_review
 from linq_client import (
     create_chat,
     mark_as_read,
@@ -60,6 +60,9 @@ DEPLOY_WINDOW_TZ = os.environ.get("DEPLOY_WINDOW_TZ", "UTC")
 store = build_store()
 
 _seen_message_ids: deque[str] = deque(maxlen=500)
+
+AUTO_MERGE_ON_APPROVE = os.environ.get("AUTO_MERGE_ON_APPROVE", "1") not in ("0", "false", "False", "")
+MERGE_METHOD = os.environ.get("MERGE_METHOD", "squash").lower()
 
 
 class DeployState(str, Enum):
@@ -256,7 +259,27 @@ def _handle_pr_reply(pr: dict, reply_text: str, sender: str, message_id: str) ->
     n_comments = len(review.get("line_comments", []))
     suffix = f" ({n_comments} line comment{'s' if n_comments != 1 else ''})" if n_comments else ""
     label = {"approve": "Approved", "request_changes": "Changes requested", "comment": "Commented"}[decision]
-    return f"{label} on {owner}/{repo}#{number}{suffix}."
+
+    merge_note = ""
+    if decision == "approve" and AUTO_MERGE_ON_APPROVE:
+        merge_note = _try_merge(owner, repo, number)
+
+    return f"{label} on {owner}/{repo}#{number}{suffix}.{merge_note}"
+
+
+def _try_merge(owner: str, repo: str, number: int) -> str:
+    try:
+        merge_pr(owner, repo, number, method=MERGE_METHOD)
+        logger.info("Merged %s/%s#%d", owner, repo, number)
+        return " Merged."
+    except Exception as e:
+        logger.info("Immediate merge blocked (%s), enabling auto-merge", e)
+    try:
+        if enable_auto_merge(owner, repo, number, method=MERGE_METHOD):
+            return " Auto-merge enabled — will merge when checks pass."
+    except Exception as e:
+        logger.error("enable_auto_merge failed: %s", e)
+    return " Merge pending (branch protection or checks blocking)."
 
 
 def _pending_ids() -> list[str]:

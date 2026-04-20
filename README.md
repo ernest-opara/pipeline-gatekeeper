@@ -161,6 +161,22 @@ Environment variables must be exported **in the same terminal** where `uvicorn` 
 
 Healthcheck lives at `/health`.
 
+**Verify the deployment:**
+
+```bash
+curl https://<railway-url>/health          # → {"ok":true}
+```
+
+Then open a fresh PR (or close and reopen one). You should get an iMessage within seconds. If `NOTIFY_NUMBER` is a single number you'll get a 1:1 chat; if comma-separated, you'll get a group chat with everyone on the list.
+
+If something 400s, Railway logs surface the exact rejection from Linq:
+
+```
+ERROR:linq_client:Linq create_chat failed (400): from=+1... to=['+X','+Y'] body={"message":"..."}
+```
+
+Most common fixes: whitespace in an env var (repaste without newlines), a sender number included in `NOTIFY_NUMBER`, or a number missing its `+` prefix.
+
 ### 5. Point Linq at the server
 
 Set the inbound webhook URL in Linq to `https://<host>/webhook/linq`.

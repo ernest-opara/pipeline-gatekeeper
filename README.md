@@ -181,7 +181,7 @@ The server reacts to your reply (👍 on receipt, ✅ on approve, ❌ on rollbac
 
 ## PR reviews
 
-When a PR is opened (or marked ready for review), [.github/workflows/pr-review.yml](.github/workflows/pr-review.yml) posts to `/pr/register` and you get a text:
+When a PR is opened, reopened, or marked ready for review, [.github/workflows/pr-review.yml](.github/workflows/pr-review.yml) posts to `/pr/register` and you get a text:
 
 > PR ready for review — acme/api#128
 > Title: Reduce idle timeout to 5m
@@ -204,6 +204,16 @@ Claude parses the reply into `{decision, body, line_comments}` and posts it as a
 - *"Approved on owner/repo#12. Merge pending (branch protection or checks blocking)."*
 
 To use auto-merge the repo must have it enabled: **Settings → General → "Allow auto-merge"**. Disable the whole behavior by setting `AUTO_MERGE_ON_APPROVE=0`.
+
+### Re-triggering a PR alert
+
+Comments on the PR don't re-fire the workflow. Three ways to get a fresh text for an existing PR:
+
+| How | When to use |
+|---|---|
+| Close and reopen the PR | Fastest — fires `reopened` automatically |
+| Push a new commit | Only if you've added `synchronize` to the trigger list (not on by default to avoid spam) |
+| Manual run | Repo **Actions → Request iMessage PR Review → Run workflow** → enter the PR number. Uses the `gh` CLI with the built-in `GITHUB_TOKEN` to fetch metadata. |
 
 **You can't approve your own PR.** GitHub rejects self-approvals with a 422. If the account behind `GH_TOKEN` also opened the PR, reply `comment ...` instead, or use a PAT under a different account (a bot or teammate). The server catches this and texts back a clear message; common failures and the reply you'll get:
 

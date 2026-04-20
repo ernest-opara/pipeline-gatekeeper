@@ -225,7 +225,7 @@ def _handle_pr_reply(pr: dict, reply_text: str, sender: str, message_id: str) ->
         diff = get_pr_diff(owner, repo, number)
     except Exception as e:
         logger.error("Failed to fetch PR diff: %s", e)
-        return "Could not fetch the PR diff from GitHub."
+        return _friendly_github_error(e, "approve")
 
     review = parse_review(reply_text, diff)
     if not review:

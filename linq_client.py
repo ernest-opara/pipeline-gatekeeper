@@ -1,5 +1,9 @@
+import logging
 import os
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 LINQ_API_BASE = "https://api.linqapp.com/api/partner/v3"
 LINQ_API_TOKEN = os.environ.get("LINQ_API_TOKEN")
@@ -35,6 +39,11 @@ def create_chat(to, body: str) -> dict:
         },
     }
     resp = httpx.post(f"{LINQ_API_BASE}/chats", json=payload, headers=_headers())
+    if resp.status_code >= 400:
+        logger.error(
+            "Linq create_chat failed (%s): from=%s to=%s body=%s",
+            resp.status_code, LINQ_PHONE_NUMBER, to, resp.text,
+        )
     resp.raise_for_status()
     return resp.json()
 

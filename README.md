@@ -42,6 +42,10 @@ When a PR opens, Gatekeeper texts you. Reply however you'd talk to a teammate:
 
 Claude turns that into a real GitHub review — APPROVE with a line comment on `auth.py:42` — and posts it. Hallucinated line references are validated against the diff and dropped.
 
+### Auto-merge the moment it's ready.
+
+When you approve, Gatekeeper tries to merge the PR immediately. If branch protection or CI is still blocking, it enables GitHub's auto-merge — the PR merges itself the second every required reviewer signs off and every check turns green. You never touch the "Merge" button.
+
 ### Canary rollouts without a dashboard.
 
 `approve 10` ships to 10% of traffic. `approve 100` goes full. One word, one tap.
@@ -57,7 +61,7 @@ Claude turns that into a real GitHub review — APPROVE with a line comment on `
 | `force approve` | Override the deploy-window check |
 | Any freeform PR review | Claude parses → GitHub review posted |
 
-Locked down out of the box: approver allowlist, HMAC-signed webhooks, business-hours window, Redis for durable state.
+Locked down out of the box: approver allowlist, HMAC-signed webhooks, webhook-replay protection, message-ID deduplication, business-hours window, Redis for durable state.
 
 ---
 
@@ -147,7 +151,7 @@ Environment variables must be exported **in the same terminal** where `uvicorn` 
 1. Push your repo to GitHub.
 2. Railway → **New Project** → **Deploy from GitHub** → pick this repo. Railway reads `Procfile`, `runtime.txt`, and `railway.json` automatically.
 3. Add all env vars from your `.env.local` (drop the `export` prefix) in **Variables**.
-4. **Add Plugin → Redis** — Railway sets `REDIS_URL` and the state store picks it up.
+4. Click **+ New → Database → Add Redis** — Railway sets `REDIS_URL` on the service and the state store picks it up automatically.
 5. Copy the public URL Railway generates, then update:
    - Linq webhook → `https://<url>/webhook/linq`
    - GitHub repo secret `GATE_SERVER_URL` → `https://<url>`
@@ -193,6 +197,14 @@ Reply however you want — free-form. Examples:
 
 Claude parses the reply into `{decision, body, line_comments}` and posts it as a review via the GitHub API. Hallucinated line references are validated against the actual diff and silently dropped.
 
+**Auto-merge.** On an `approve`, Gatekeeper then tries to merge the PR immediately. If GitHub blocks it (required checks pending, other reviewers needed), it enables GitHub's native auto-merge so the PR merges itself the moment all conditions clear. The iMessage reply tells you exactly what happened:
+
+- *"Approved on owner/repo#12. Merged."*
+- *"Approved on owner/repo#12. Auto-merge enabled — will merge when checks pass."*
+- *"Approved on owner/repo#12. Merge pending (branch protection or checks blocking)."*
+
+To use auto-merge the repo must have it enabled: **Settings → General → "Allow auto-merge"**. Disable the whole behavior by setting `AUTO_MERGE_ON_APPROVE=0`.
+
 **You can't approve your own PR.** GitHub rejects self-approvals with a 422. If the account behind `GH_TOKEN` also opened the PR, reply `comment ...` instead, or use a PAT under a different account (a bot or teammate). The server catches this and texts back a clear message; common failures and the reply you'll get:
 
 | Situation | Reply you'll receive |
@@ -210,6 +222,7 @@ Claude parses the reply into `{decision, body, line_comments}` and posts it as a
 | `POST` | `/deploy/register` | Register a pending deploy (GitHub Actions) |
 | `GET`  | `/deploy/status/{deploy_id}` | Poll deploy state + canary percent |
 | `POST` | `/pr/register` | Register a PR for iMessage review |
+| `GET`  | `/health` | Liveness probe (Railway / load balancers) |
 
 ## Security
 

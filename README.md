@@ -102,7 +102,7 @@ pip install -r requirements.txt
 |---|---|---|
 | `LINQ_API_TOKEN` | yes | Linq API token |
 | `LINQ_PHONE_NUMBER` | yes | Your Linq sandbox line |
-| `NOTIFY_NUMBER` | yes | Phone number to alert |
+| `NOTIFY_NUMBER` | yes | Phone number to alert. For **group chats**, pass multiple comma-separated E.164 numbers (e.g. `+1234567,+1987654,+1555555`). Any participant in the allowlist can approve. |
 | `ANTHROPIC_API_KEY` | recommended | Enables AI risk summary |
 | `LINQ_WEBHOOK_SECRET` | recommended | HMAC secret for webhook signature verification |
 | `APPROVER_NUMBERS` | optional | Comma-separated allowlist of approver phone numbers |
@@ -223,6 +223,28 @@ Comments on the PR don't re-fire the workflow. Three ways to get a fresh text fo
 | Token missing `pull-requests: write` | *"GitHub denied the request — the token is missing 'pull-requests: write'."* |
 | Token can't see this repo | *"GitHub couldn't find the PR. Check the token has access to this repo."* |
 | Token invalid/expired | *"GitHub token is invalid or expired."* |
+
+## Group-chat approvals
+
+To route alerts to a team group chat instead of a single person, set `NOTIFY_NUMBER` (or the GitHub secret) to a comma-separated list of E.164 numbers:
+
+```
++15551234567,+15559876543,+15557778888
+```
+
+Linq creates an iMessage group with those participants on first send and reuses the same chat_id for follow-ups. Anyone in the group can reply — whichever message arrives first wins. Combine with `APPROVER_NUMBERS` to restrict who can actually approve:
+
+```
+APPROVER_NUMBERS=+15551234567,+15559876543
+```
+
+Unlisted group members get a polite *"Sender X is not on the approver allowlist"* reply.
+
+**Caveats from the Linq API:**
+
+- Typing indicators don't work in group chats (Linq returns 403) — Gatekeeper detects group chats and skips them.
+- The group must have 3+ participants total (you + 2 others) for Linq to treat it as a group.
+- Reactions (👍, ✅, ❌) still work in groups.
 
 ## API
 

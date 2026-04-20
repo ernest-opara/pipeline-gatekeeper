@@ -27,7 +27,7 @@ def test_deploy_status_returns_state():
 
 
 def test_deploy_register_stores_pending(monkeypatch):
-    monkeypatch.setattr(server, "send_deploy_alert", lambda **kw: "chat-xyz")
+    monkeypatch.setattr(server, "send_deploy_alert", lambda **kw: ("chat-xyz", False))
     monkeypatch.setattr(server, "summarize_risk", lambda **kw: "LOW RISK: doc-only.")
     payload = {
         "deploy_id": "d42",
@@ -46,8 +46,30 @@ def test_deploy_register_stores_pending(monkeypatch):
     assert store.get("d42")["chat_id"] == "chat-xyz"
 
 
+def test_deploy_register_handles_group_recipients(monkeypatch):
+    captured = {}
+
+    def fake_alert(**kw):
+        captured["to"] = kw["to"]
+        return ("chat-group", True)
+
+    monkeypatch.setattr(server, "send_deploy_alert", fake_alert)
+    monkeypatch.setattr(server, "summarize_risk", lambda **kw: "")
+    payload = {
+        "deploy_id": "d99",
+        "repo": "r",
+        "branch": "b",
+        "actor": "a",
+        "notify_number": "+15551112222,+15553334444,+15555556666",
+    }
+    resp = client.post("/deploy/register", json=payload)
+    assert resp.status_code == 200
+    assert captured["to"] == ["+15551112222", "+15553334444", "+15555556666"]
+    assert store.get("d99")["is_group"] is True
+
+
 def test_pr_register_stores_pending(monkeypatch):
-    monkeypatch.setattr(server, "create_chat", lambda to, msg: {"chat": {"id": "chat-pr"}})
+    monkeypatch.setattr(server, "create_chat", lambda to, msg: {"chat": {"id": "chat-pr", "is_group": False}})
     payload = {
         "owner": "acme",
         "repo": "api",

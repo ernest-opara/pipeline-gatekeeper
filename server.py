@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from datetime import datetime
 from enum import Enum
 from typing import Optional
@@ -57,6 +58,8 @@ DEPLOY_WINDOW_END = int(os.environ.get("DEPLOY_WINDOW_END_HOUR", "-1"))
 DEPLOY_WINDOW_TZ = os.environ.get("DEPLOY_WINDOW_TZ", "UTC")
 
 store = build_store()
+
+_seen_message_ids: deque[str] = deque(maxlen=500)
 
 
 class DeployState(str, Enum):
@@ -133,6 +136,12 @@ async def linq_webhook(
     chat_id = data.get("chat", {}).get("id", "")
     message_id = data.get("id", "")
     sender = data.get("sender_handle", {}).get("handle", "")
+
+    if message_id and message_id in _seen_message_ids:
+        logger.info("Duplicate webhook for message %s — ignoring", message_id)
+        return {"ok": True, "duplicate": True}
+    if message_id:
+        _seen_message_ids.append(message_id)
     parts = data.get("parts", [])
     body = ""
     for part in parts:

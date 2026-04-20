@@ -106,7 +106,9 @@ pip install -r requirements.txt
 | `DEPLOY_WINDOW_END_HOUR` | optional | End of deploy window (0–23) |
 | `DEPLOY_WINDOW_TZ` | optional | IANA timezone for the window (e.g. `America/New_York`) |
 | `REDIS_URL` | optional | Redis connection string for durable state |
-| `GH_TOKEN` | for PR reviews | Fine-grained PAT with `pull-requests: write` + `contents: read` on the repo |
+| `GH_TOKEN` | for PR reviews | Classic PAT with `repo` scope (covers reviews + auto-merge). Fine-grained equivalent: `pull-requests: write` + `contents: write`. |
+| `AUTO_MERGE_ON_APPROVE` | optional | `1` (default) to merge on approve; `0` to only post the review |
+| `MERGE_METHOD` | optional | `squash` (default), `merge`, or `rebase` |
 
 ### 3. Run the server
 

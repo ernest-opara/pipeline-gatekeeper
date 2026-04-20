@@ -36,6 +36,56 @@ def get_pr_diff(owner: str, repo: str, number: int) -> str:
     return resp.text
 
 
+def get_pr(owner: str, repo: str, number: int) -> dict:
+    resp = httpx.get(
+        f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
+        headers=_headers(),
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def merge_pr(owner: str, repo: str, number: int, method: str = "squash") -> dict:
+    """Merge a PR immediately if GitHub allows it. Raises on failure."""
+    resp = httpx.put(
+        f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}/merge",
+        headers=_headers(),
+        json={"merge_method": method},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def enable_auto_merge(owner: str, repo: str, number: int, method: str = "SQUASH") -> bool:
+    """Enable GitHub's auto-merge on a PR via GraphQL. Returns True on success."""
+    pr = get_pr(owner, repo, number)
+    node_id = pr.get("node_id")
+    if not node_id:
+        return False
+    query = """
+    mutation($pr: ID!, $method: PullRequestMergeMethod!) {
+      enablePullRequestAutoMerge(input: {pullRequestId: $pr, mergeMethod: $method}) {
+        pullRequest { id }
+      }
+    }
+    """
+    resp = httpx.post(
+        f"{GITHUB_API}/graphql",
+        headers=_headers(),
+        json={"query": query, "variables": {"pr": node_id, "method": method.upper()}},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    errors = payload.get("errors") or []
+    if errors:
+        logger.warning("enablePullRequestAutoMerge errors: %s", errors)
+        return False
+    return True
+
+
 def submit_review(
     owner: str,
     repo: str,

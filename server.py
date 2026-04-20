@@ -98,6 +98,11 @@ def _verify_signature(raw_body: bytes, timestamp: str, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+
 @app.post("/webhook/linq")
 async def linq_webhook(
     request: Request,

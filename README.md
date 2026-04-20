@@ -138,7 +138,19 @@ Environment variables must be exported **in the same terminal** where `uvicorn` 
 
 ### 4. Expose publicly
 
-For local dev: `ngrok http 8000`. For production: deploy to any Python host (Fly.io, Railway, Render) and set `REDIS_URL` so state survives restarts.
+**Local dev:** `ngrok http 8000`.
+
+**Production (Railway — recommended):**
+
+1. Push your repo to GitHub.
+2. Railway → **New Project** → **Deploy from GitHub** → pick this repo. Railway reads `Procfile`, `runtime.txt`, and `railway.json` automatically.
+3. Add all env vars from your `.env.local` (drop the `export` prefix) in **Variables**.
+4. **Add Plugin → Redis** — Railway sets `REDIS_URL` and the state store picks it up.
+5. Copy the public URL Railway generates, then update:
+   - Linq webhook → `https://<url>/webhook/linq`
+   - GitHub repo secret `GATE_SERVER_URL` → `https://<url>`
+
+Healthcheck lives at `/health`.
 
 ### 5. Point Linq at the server
 

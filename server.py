@@ -163,7 +163,10 @@ async def linq_webhook(
     _safe(mark_as_read, chat_id)
     if message_id:
         _safe(send_reaction, message_id, "like")
-    _safe(start_typing, chat_id)
+
+    is_group = _chat_is_group(chat_id)
+    if not is_group:
+        _safe(start_typing, chat_id)
 
     pr_entry = _find_pr_by_chat(chat_id)
 
@@ -173,7 +176,8 @@ async def linq_webhook(
         else:
             reply_text = _handle_command(body, sender, message_id)
     finally:
-        _safe(stop_typing, chat_id)
+        if not is_group:
+            _safe(stop_typing, chat_id)
 
     if reply_text:
         _safe(reply_to_chat, chat_id, reply_text)
@@ -204,6 +208,17 @@ def _friendly_github_error(err: Exception, decision: str) -> str:
             return "GitHub token is invalid or expired."
         return f"GitHub error {status}. Check server logs."
     return "Could not submit the review. Check server logs."
+
+
+def _chat_is_group(chat_id: str) -> bool:
+    for entry in store.all().values():
+        if entry.get("chat_id") == chat_id:
+            return bool(entry.get("is_group"))
+    return False
+
+
+def _parse_recipients(notify_number: str) -> list[str]:
+    return [n.strip() for n in notify_number.split(",") if n.strip()]
 
 
 def _find_pr_by_chat(chat_id: str) -> Optional[dict]:
@@ -406,8 +421,9 @@ async def register_deploy(body: RegisterDeploy):
 
     outside_window = not _in_deploy_window()
 
-    chat_id = send_deploy_alert(
-        to=body.notify_number,
+    recipients = _parse_recipients(body.notify_number)
+    chat_id, is_group = send_deploy_alert(
+        to=recipients,
         deploy_id=body.deploy_id,
         repo=body.repo,
         branch=body.branch,
@@ -426,6 +442,7 @@ async def register_deploy(body: RegisterDeploy):
         {
             "state": DeployState.PENDING,
             "chat_id": chat_id,
+            "is_group": is_group,
             "repo": body.repo,
             "branch": body.branch,
             "actor": body.actor,
@@ -463,8 +480,10 @@ async def register_pr(body: RegisterPR):
         msg += f"\n{body.url}\n"
     msg += "\nReply with your review (e.g. 'approve', 'request changes — auth.py:42 needs a timeout')."
 
-    chat = create_chat(body.notify_number, msg)
+    recipients = _parse_recipients(body.notify_number)
+    chat = create_chat(recipients, msg)
     chat_id = chat["chat"]["id"]
+    is_group = bool(chat["chat"].get("is_group"))
 
     key = f"pr-{body.owner}-{body.repo}-{body.number}"
     store.set(
@@ -473,6 +492,7 @@ async def register_pr(body: RegisterPR):
             "type": "pr",
             "state": "pending",
             "chat_id": chat_id,
+            "is_group": is_group,
             "owner": body.owner,
             "repo": body.repo,
             "number": body.number,

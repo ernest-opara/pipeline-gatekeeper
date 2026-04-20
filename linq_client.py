@@ -22,11 +22,14 @@ def _headers():
     }
 
 
-def create_chat(to: str, body: str) -> dict:
-    """Start a new chat (used for the initial deploy notification)."""
+def create_chat(to, body: str) -> dict:
+    """Start a new chat. `to` is a single handle or a list of handles.
+    Multiple handles creates a group chat."""
+    if isinstance(to, str):
+        to = [to]
     payload = {
         "from": LINQ_PHONE_NUMBER,
-        "to": [to],
+        "to": to,
         "message": {
             "parts": [{"type": "text", "value": body}]
         },
@@ -103,7 +106,7 @@ def send_reaction(message_id: str, reaction: str, custom_emoji: str | None = Non
 
 
 def send_deploy_alert(
-    to: str,
+    to,
     deploy_id: str,
     repo: str,
     branch: str,
@@ -115,8 +118,8 @@ def send_deploy_alert(
     run_url: str = "",
     risk_summary: str = "",
     outside_window: bool = False,
-) -> str:
-    """Send the deploy gate notification and return the chat_id for future replies."""
+) -> tuple[str, bool]:
+    """Send the deploy gate notification. Returns (chat_id, is_group)."""
     lines = [f"Deploy ready — {repo} ({branch})"]
     if pr_title:
         lines.append(f"PR: {pr_title}")
@@ -142,4 +145,5 @@ def send_deploy_alert(
     lines.append("Reply 'approve', 'approve 10' (canary 10%), or 'rollback'.")
     body = "\n".join(lines)
     result = create_chat(to, body)
-    return result["chat"]["id"]
+    chat = result["chat"]
+    return chat["id"], bool(chat.get("is_group"))

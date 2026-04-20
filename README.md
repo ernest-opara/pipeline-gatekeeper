@@ -59,7 +59,7 @@ When you approve, Gatekeeper tries to merge the PR immediately. If branch protec
 | `rollback` | Cancel the deployment |
 | `status` | List every pending deploy |
 | `force approve` | Override the deploy-window check |
-| Any freeform PR review | Claude parses → GitHub review posted |
+| Any freeform PR review | Claude parses → GitHub review posted → PR auto-merges when checks pass |
 
 Locked down out of the box: approver allowlist, HMAC-signed webhooks, webhook-replay protection, message-ID deduplication, business-hours window, Redis for durable state.
 
@@ -80,10 +80,13 @@ Locked down out of the box: approver allowlist, HMAC-signed webhooks, webhook-re
     📱 text                    📱 text
        │                          │
        ▼                          ▼
-  reply "approve"          reply freeform review
+  reply "approve 10"       reply freeform review
        │                          │
        ▼                          ▼
-  deploy runs            GitHub review posted
+  canary deploys           GitHub review posted
+                                   │
+                                   ▼
+                          auto-merged when checks pass
 ```
 
 ## Setup
